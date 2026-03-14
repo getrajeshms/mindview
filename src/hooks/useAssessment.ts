@@ -1,8 +1,53 @@
 import { useState, useCallback } from 'react';
 import { PatientInfo, BackgroundInfo, AssessmentResponse, AssessmentResult } from '@/types/assessment';
-import { assessmentCategories, getAllQuestions } from '@/data/assessmentQuestions';
+import { assessmentCategories, AssessmentCategory, AssessmentQuestion } from '@/data/assessmentQuestions';
 
 export type AssessmentStep = 'patient-info' | 'background' | 'assessment' | 'clinical' | 'report';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BRANCHING LOGIC ENGINE
+// For each domain, check if ALL screening questions scored 0.
+// If so, mark remaining (non-screening) questions as skipped.
+// ─────────────────────────────────────────────────────────────────────────────
+export function shouldSkipQuestion(
+  question: AssessmentQuestion,
+  category: AssessmentCategory,
+  responses: AssessmentResponse[]
+): boolean {
+  // Screening questions are never skipped — they are always shown
+  if (question.isScreening) return false;
+
+  // Check if ALL screening questions in this domain scored 0
+  const allScreeningZero = category.screeningQuestionIds.every(screenId => {
+    const response = responses.find(r => r.questionId === screenId);
+    // If not yet answered, don't skip (conservative — show the question)
+    if (response === undefined) return false;
+    return response.rating === 0;
+  });
+
+  return allScreeningZero;
+}
+
+// Build a flat ordered list of questions, filtering out skipped ones
+export function buildActiveQuestionList(responses: AssessmentResponse[]): Array<{
+  category: AssessmentCategory;
+  question: AssessmentQuestion;
+  skipped: boolean;
+}> {
+  const list: Array<{ category: AssessmentCategory; question: AssessmentQuestion; skipped: boolean }> = [];
+  for (const category of assessmentCategories) {
+    for (const question of category.questions) {
+      const skipped = shouldSkipQuestion(question, category, responses);
+      list.push({ category, question, skipped });
+    }
+  }
+  return list;
+}
+
+// Get only the questions that should be shown (not skipped)
+export function getActiveQuestions(responses: AssessmentResponse[]) {
+  return buildActiveQuestionList(responses).filter(item => !item.skipped);
+}
 
 const initialPatientInfo: PatientInfo = {
   name: '',
@@ -31,8 +76,8 @@ const initialBackgroundInfo: BackgroundInfo = {
 
 export function useAssessment() {
   const [currentStep, setCurrentStep] = useState<AssessmentStep>('patient-info');
-  const [currentCategoryIndex, setCurrentCategoryIndex] = useState(0);
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  // activeIndex is the index into getActiveQuestions(responses)
+  const [activeIndex, setActiveIndex] = useState(0);
   const [patientInfo, setPatientInfo] = useState<PatientInfo>(initialPatientInfo);
   const [backgroundInfo, setBackgroundInfo] = useState<BackgroundInfo>(initialBackgroundInfo);
   const [responses, setResponses] = useState<AssessmentResponse[]>([]);
@@ -40,18 +85,26 @@ export function useAssessment() {
   const [treatmentGiven, setTreatmentGiven] = useState('');
   const [assistanceRequired, setAssistanceRequired] = useState('');
 
-  const totalQuestions = getAllQuestions().length;
-  const currentCategory = assessmentCategories[currentCategoryIndex];
-  const currentQuestion = currentCategory?.questions[currentQuestionIndex];
+  // Recompute active questions every time responses change (branching is dynamic)
+  const activeQuestions = getActiveQuestions(responses);
+  const currentItem = activeQuestions[activeIndex];
+  const currentCategory = currentItem?.category;
+  const currentQuestion = currentItem?.question;
+
+  // For ProgressHeader compatibility — derive category/question indices
+  const currentCategoryIndex = currentCategory
+    ? assessmentCategories.findIndex(c => c.id === currentCategory.id)
+    : 0;
+  const currentQuestionIndex = currentQuestion && currentCategory
+    ? currentCategory.questions.findIndex(q => q.id === currentQuestion.id)
+    : 0;
+
+  const totalActiveQuestions = activeQuestions.length;
 
   const getProgress = useCallback(() => {
-    let completedQuestions = 0;
-    for (let i = 0; i < currentCategoryIndex; i++) {
-      completedQuestions += assessmentCategories[i].questions.length;
-    }
-    completedQuestions += currentQuestionIndex;
-    return (completedQuestions / totalQuestions) * 100;
-  }, [currentCategoryIndex, currentQuestionIndex, totalQuestions]);
+    if (totalActiveQuestions === 0) return 0;
+    return (activeIndex / totalActiveQuestions) * 100;
+  }, [activeIndex, totalActiveQuestions]);
 
   const saveResponse = useCallback((questionId: string, rating: number, notes?: string) => {
     setResponses(prev => {
@@ -71,27 +124,22 @@ export function useAssessment() {
   }, [responses]);
 
   const nextQuestion = useCallback(() => {
-    if (currentQuestionIndex < currentCategory.questions.length - 1) {
-      setCurrentQuestionIndex(prev => prev + 1);
-    } else if (currentCategoryIndex < assessmentCategories.length - 1) {
-      setCurrentCategoryIndex(prev => prev + 1);
-      setCurrentQuestionIndex(0);
+    // Recompute active list with latest responses to apply branching
+    // (responses state update is async, so we pass current responses)
+    if (activeIndex < totalActiveQuestions - 1) {
+      setActiveIndex(prev => prev + 1);
     } else {
       setCurrentStep('clinical');
     }
-  }, [currentQuestionIndex, currentCategoryIndex, currentCategory]);
+  }, [activeIndex, totalActiveQuestions]);
 
   const prevQuestion = useCallback(() => {
-    if (currentQuestionIndex > 0) {
-      setCurrentQuestionIndex(prev => prev - 1);
-    } else if (currentCategoryIndex > 0) {
-      const prevCategoryIndex = currentCategoryIndex - 1;
-      setCurrentCategoryIndex(prevCategoryIndex);
-      setCurrentQuestionIndex(assessmentCategories[prevCategoryIndex].questions.length - 1);
+    if (activeIndex > 0) {
+      setActiveIndex(prev => prev - 1);
     } else {
       setCurrentStep('background');
     }
-  }, [currentQuestionIndex, currentCategoryIndex]);
+  }, [activeIndex]);
 
   const generateResult = useCallback((): AssessmentResult => {
     return {
@@ -107,8 +155,7 @@ export function useAssessment() {
 
   const resetAssessment = useCallback(() => {
     setCurrentStep('patient-info');
-    setCurrentCategoryIndex(0);
-    setCurrentQuestionIndex(0);
+    setActiveIndex(0);
     setPatientInfo(initialPatientInfo);
     setBackgroundInfo(initialBackgroundInfo);
     setResponses([]);
@@ -117,6 +164,12 @@ export function useAssessment() {
     setAssistanceRequired('');
   }, []);
 
+  const isFirstQuestion = activeIndex === 0;
+  const isLastQuestion = activeIndex === totalActiveQuestions - 1;
+
+  // How many domains are being skipped (for UI display)
+  const skippedCount = buildActiveQuestionList(responses).filter(i => i.skipped).length;
+
   return {
     currentStep,
     setCurrentStep,
@@ -124,6 +177,8 @@ export function useAssessment() {
     currentQuestionIndex,
     currentCategory,
     currentQuestion,
+    activeIndex,
+    totalActiveQuestions,
     patientInfo,
     setPatientInfo,
     backgroundInfo,
@@ -142,6 +197,10 @@ export function useAssessment() {
     setAssistanceRequired,
     generateResult,
     resetAssessment,
-    totalQuestions,
+    isFirstQuestion,
+    isLastQuestion,
+    skippedCount,
+    // Keep for backward compat with ProgressHeader
+    totalQuestions: totalActiveQuestions,
   };
 }
