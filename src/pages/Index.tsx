@@ -7,7 +7,6 @@ import { BackgroundForm } from '@/components/assessment/BackgroundForm';
 import { QuestionCard } from '@/components/assessment/QuestionCard';
 import { ClinicalJudgementForm } from '@/components/assessment/ClinicalJudgementForm';
 import { AssessmentReport } from '@/components/assessment/AssessmentReport';
-import { assessmentCategories } from '@/data/assessmentQuestions';
 import { AssessmentResult } from '@/types/assessment';
 
 const Index = () => {
@@ -17,8 +16,6 @@ const Index = () => {
   const {
     currentStep,
     setCurrentStep,
-    currentCategoryIndex,
-    currentQuestionIndex,
     currentCategory,
     currentQuestion,
     patientInfo,
@@ -38,12 +35,14 @@ const Index = () => {
     setAssistanceRequired,
     generateResult,
     resetAssessment,
-    totalQuestions,
+    isFirstQuestion,
+    isLastQuestion,
+    activeIndex,
+    totalActiveQuestions,
+    skippedCount,
   } = useAssessment();
 
-  const handleStartAssessment = () => {
-    setShowWelcome(false);
-  };
+  const handleStartAssessment = () => setShowWelcome(false);
 
   const handleNewAssessment = () => {
     resetAssessment();
@@ -59,25 +58,14 @@ const Index = () => {
 
   const getStepProgress = () => {
     switch (currentStep) {
-      case 'patient-info':
-        return 5;
-      case 'background':
-        return 10;
-      case 'assessment':
-        return 10 + (getProgress() * 0.75);
-      case 'clinical':
-        return 90;
-      case 'report':
-        return 100;
-      default:
-        return 0;
+      case 'patient-info': return 5;
+      case 'background': return 10;
+      case 'assessment': return 10 + (getProgress() * 0.75);
+      case 'clinical': return 90;
+      case 'report': return 100;
+      default: return 0;
     }
   };
-
-  const isFirstQuestion = currentCategoryIndex === 0 && currentQuestionIndex === 0;
-  const isLastQuestion =
-    currentCategoryIndex === assessmentCategories.length - 1 &&
-    currentQuestionIndex === currentCategory?.questions.length - 1;
 
   if (showWelcome) {
     return <WelcomeScreen onStart={handleStartAssessment} />;
@@ -117,7 +105,7 @@ const Index = () => {
         />
       )}
 
-      {currentStep === 'assessment' && currentQuestion && (
+      {currentStep === 'assessment' && currentQuestion && currentCategory && (
         <QuestionCard
           question={currentQuestion}
           categoryName={currentCategory.name}
@@ -128,6 +116,9 @@ const Index = () => {
           onBack={prevQuestion}
           isFirst={isFirstQuestion}
           isLast={isLastQuestion}
+          activeIndex={activeIndex}
+          totalActiveQuestions={totalActiveQuestions}
+          skippedCount={skippedCount}
         />
       )}
 
@@ -139,9 +130,7 @@ const Index = () => {
           onClinicalChange={setClinicalJudgement}
           onTreatmentChange={setTreatmentGiven}
           onAssistanceChange={setAssistanceRequired}
-          onBack={() => {
-            setCurrentStep('assessment');
-          }}
+          onBack={() => setCurrentStep('assessment')}
           onGenerateReport={handleGenerateReport}
         />
       )}
